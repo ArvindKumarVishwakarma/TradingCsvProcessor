@@ -2,9 +2,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using TradingCsvProcessor.Application.Interfaces;
+using TradingCsvProcessor.Domain.Interfaces;
 using TradingCsvProcessor.Domain.Repositories;
 using TradingCsvProcessor.Infrastructure.Messaging;
 using TradingCsvProcessor.Infrastructure.Persistence;
+using TradingCsvProcessor.Infrastructure.Processing;
 using TradingCsvProcessor.Infrastructure.Repositories;
 using TradingCsvProcessor.Infrastructure.Storage;
 using TradingCsvProcessor.Infrastructure.Workers;
@@ -23,24 +25,18 @@ public static class InfrastructureServiceExtensions
                 sql =>
                 {
                     sql.CommandTimeout(120);
-                    // Transient fault retry — handles brief SQL Azure / network blips
-                    sql.EnableRetryOnFailure(
-                        maxRetryCount:  5,
-                        maxRetryDelay:  TimeSpan.FromSeconds(30),
-                        errorNumbersToAdd: null);
+                    sql.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(30), null);
                 }));
 
-        // ── Health check — EF Core DB context ping ────────────────────────────
-        services.AddHealthChecks()
-            .AddDbContextCheck<AppDbContext>(
-                name: "database",
-                tags: ["ready", "db"]);
+        services.AddScoped<IUnitOfWork, UnitOfWork>();
 
-        // ── In-memory job queue ───────────────────────────────────────────────
+        // ── Health check ──────────────────────────────────────────────────────
+        services.AddHealthChecks()
+            .AddDbContextCheck<AppDbContext>(name: "database", tags: ["ready", "db"]);
+
+        // ── In-process job queue ──────────────────────────────────────────────
         services.AddSingleton<ProcessingChannel>();
         services.AddSingleton<JobCancellationRegistry>();
-
-        // Expose concrete singletons through application-layer interfaces
         services.AddSingleton<IJobQueue>(sp => sp.GetRequiredService<ProcessingChannel>());
         services.AddSingleton<IJobCancellationRegistry>(sp => sp.GetRequiredService<JobCancellationRegistry>());
 
@@ -52,6 +48,11 @@ public static class InfrastructureServiceExtensions
 
         // ── Storage ───────────────────────────────────────────────────────────
         services.AddScoped<IFileStorageService, FileStorageService>();
+
+        // ── Processing pipeline ───────────────────────────────────────────────
+        services.AddScoped<ICsvStreamReader,  CsvStreamReaderService>();
+        services.AddScoped<IChunkProcessor,   ChunkProcessorService>();
+        services.AddScoped<IJobOrchestrator,  JobOrchestrator>();
 
         // ── Background worker ─────────────────────────────────────────────────
         services.AddHostedService<CsvProcessingWorker>();

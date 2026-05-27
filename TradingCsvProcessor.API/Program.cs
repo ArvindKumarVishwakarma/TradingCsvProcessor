@@ -50,8 +50,7 @@ try
 
     // ── CORS ──────────────────────────────────────────────────────────────────
     var allowedOrigins = builder.Configuration
-        .GetSection("Cors:AllowedOrigins")
-        .Get<string[]>() ?? [];
+        .GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
 
     builder.Services.AddCors(opts => opts.AddDefaultPolicy(policy =>
     {
@@ -62,25 +61,25 @@ try
     }));
 
     // ── Rate Limiting ─────────────────────────────────────────────────────────
-    var rlSection = builder.Configuration.GetSection("RateLimit");
+    var rl = builder.Configuration.GetSection("RateLimit");
 
     builder.Services.AddRateLimiter(opts =>
     {
         opts.AddSlidingWindowLimiter("upload", o =>
         {
-            o.PermitLimit             = rlSection.GetValue("UploadPermitLimit", 10);
-            o.Window                  = TimeSpan.FromMinutes(rlSection.GetValue("UploadWindowMinutes", 1));
-            o.SegmentsPerWindow       = 4;
-            o.QueueProcessingOrder    = QueueProcessingOrder.OldestFirst;
-            o.QueueLimit              = 2;
+            o.PermitLimit          = rl.GetValue("UploadPermitLimit", 10);
+            o.Window               = TimeSpan.FromMinutes(rl.GetValue("UploadWindowMinutes", 1));
+            o.SegmentsPerWindow    = 4;
+            o.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+            o.QueueLimit           = 2;
         });
 
         opts.AddFixedWindowLimiter("api", o =>
         {
-            o.PermitLimit             = rlSection.GetValue("ApiPermitLimit", 200);
-            o.Window                  = TimeSpan.FromMinutes(rlSection.GetValue("ApiWindowMinutes", 1));
-            o.QueueProcessingOrder    = QueueProcessingOrder.OldestFirst;
-            o.QueueLimit              = 10;
+            o.PermitLimit          = rl.GetValue("ApiPermitLimit", 200);
+            o.Window               = TimeSpan.FromMinutes(rl.GetValue("ApiWindowMinutes", 1));
+            o.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+            o.QueueLimit           = 10;
         });
 
         opts.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -112,10 +111,10 @@ try
     // ── Output Cache ──────────────────────────────────────────────────────────
     builder.Services.AddOutputCache(opts =>
     {
-        opts.AddPolicy("job-status", policy =>
-            policy.Expire(TimeSpan.FromSeconds(3)).SetVaryByRouteValue("jobId"));
-        opts.AddPolicy("jobs-list", policy =>
-            policy.Expire(TimeSpan.FromSeconds(3)));
+        opts.AddPolicy("job-status", p =>
+            p.Expire(TimeSpan.FromSeconds(3)).SetVaryByRouteValue("jobId"));
+        opts.AddPolicy("jobs-list", p =>
+            p.Expire(TimeSpan.FromSeconds(3)));
     });
 
     // ── Request Timeouts ──────────────────────────────────────────────────────
@@ -127,10 +126,8 @@ try
 
     // ── Health Checks ─────────────────────────────────────────────────────────
     builder.Services.AddHealthChecks()
-        .AddDbContextCheck<AppDbContext>("database", tags: ["ready", "db"])
         .AddCheck<FileStorageHealthCheck>("file-storage", tags: ["ready", "storage"]);
 
-    // ── Memory Cache (for potential future distributed cache) ─────────────────
     builder.Services.AddMemoryCache();
 
     var app = builder.Build();
@@ -154,6 +151,7 @@ try
 
     // ── Middleware Pipeline ───────────────────────────────────────────────────
     app.UseMiddleware<ExceptionHandlingMiddleware>();
+    app.UseMiddleware<CorrelationIdMiddleware>();
     app.UseMiddleware<SecurityHeadersMiddleware>();
 
     if (app.Environment.IsDevelopment())
@@ -170,8 +168,8 @@ try
     {
         opts.EnrichDiagnosticContext = (diag, ctx) =>
         {
-            diag.Set("RequestHost", ctx.Request.Host.Value ?? string.Empty);
-            diag.Set("UserAgent",   ctx.Request.Headers.UserAgent.ToString());
+            diag.Set("CorrelationId", ctx.Items[CorrelationIdMiddleware.HeaderName] ?? string.Empty);
+            diag.Set("RequestHost",   ctx.Request.Host.Value ?? string.Empty);
         };
     });
 
@@ -196,7 +194,6 @@ try
         AllowCachingResponses = false
     });
 
-    // Liveness — no checks needed; if the process is alive, it answers.
     app.MapHealthChecks("/health/live", new HealthCheckOptions
     {
         Predicate             = _ => false,
@@ -217,7 +214,6 @@ finally
     Log.CloseAndFlush();
 }
 
-// ── Health response helper ────────────────────────────────────────────────────
 internal static class HealthResponseWriter
 {
     public static Task Write(HttpContext ctx, HealthReport report)
@@ -225,9 +221,9 @@ internal static class HealthResponseWriter
         ctx.Response.ContentType = "application/json";
         return ctx.Response.WriteAsJsonAsync(new
         {
-            status        = report.Status.ToString(),
+            status          = report.Status.ToString(),
             totalDurationMs = report.TotalDuration.TotalMilliseconds,
-            checks        = report.Entries.Select(e => new
+            checks          = report.Entries.Select(e => new
             {
                 name        = e.Key,
                 status      = e.Value.Status.ToString(),

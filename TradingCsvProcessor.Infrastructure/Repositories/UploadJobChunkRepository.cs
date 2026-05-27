@@ -5,16 +5,10 @@ using TradingCsvProcessor.Infrastructure.Persistence;
 
 namespace TradingCsvProcessor.Infrastructure.Repositories;
 
-public sealed class UploadJobChunkRepository : IUploadJobChunkRepository
+public sealed class UploadJobChunkRepository(AppDbContext db) : IUploadJobChunkRepository
 {
-    private readonly AppDbContext _db;
-
-    public UploadJobChunkRepository(AppDbContext db) => _db = db;
-
     public Task<UploadJobChunk?> GetByJobAndChunkNumberAsync(Guid jobId, int chunkNumber, CancellationToken ct = default)
-        => _db.UploadJobChunks.FirstOrDefaultAsync(c => c.JobId == jobId && c.ChunkNumber == chunkNumber, ct);
+        => db.UploadJobChunks.FirstOrDefaultAsync(c => c.JobId == jobId && c.ChunkNumber == chunkNumber, ct);
 
-    public void Add(UploadJobChunk chunk) => _db.UploadJobChunks.Add(chunk);
-
-    public Task SaveChangesAsync(CancellationToken ct = default) => _db.SaveChangesAsync(ct);
+    public void Add(UploadJobChunk chunk) => db.UploadJobChunks.Add(chunk);
 }

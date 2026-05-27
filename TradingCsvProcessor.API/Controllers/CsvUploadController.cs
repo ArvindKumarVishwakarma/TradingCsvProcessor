@@ -3,8 +3,12 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
+using TradingCsvProcessor.Application.Abstractions;
 using TradingCsvProcessor.Application.DTOs;
-using TradingCsvProcessor.Application.Interfaces;
+using TradingCsvProcessor.Application.Features.Jobs.Commands.CancelJob;
+using TradingCsvProcessor.Application.Features.Jobs.Commands.UploadCsv;
+using TradingCsvProcessor.Application.Features.Jobs.Queries.GetAllJobs;
+using TradingCsvProcessor.Application.Features.Jobs.Queries.GetJobStatus;
 using TradingCsvProcessor.Application.Options;
 
 namespace TradingCsvProcessor.API.Controllers;
@@ -15,7 +19,10 @@ namespace TradingCsvProcessor.API.Controllers;
 [EnableRateLimiting("api")]
 [Produces("application/json")]
 public sealed class CsvUploadController(
-    ICsvUploadService uploadService,
+    ICommandHandler<UploadCsvCommand, UploadResponse>                 uploadHandler,
+    ICommandHandler<CancelJobCommand, CancelJobResponse>              cancelHandler,
+    IQueryHandler<GetJobStatusQuery,  JobStatusResponse?>             statusQuery,
+    IQueryHandler<GetAllJobsQuery,    IReadOnlyList<JobStatusResponse>> listQuery,
     IOptions<FileStorageOptions> storageOptions) : ControllerBase
 {
     private long MaxFileSize => storageOptions.Value.MaxFileSizeBytes;
@@ -29,20 +36,20 @@ public sealed class CsvUploadController(
     [ProducesResponseType(typeof(UploadResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
-    public async Task<IActionResult> Upload([FromForm] IFormFile? file, CancellationToken ct)
+    public async Task<ActionResult<UploadResponse>> Upload([FromForm] IFormFile? file, CancellationToken ct)
     {
         if (file is null || file.Length == 0)
-            return BadRequest(ProblemFor("No file provided.", "Provide a non-empty .csv file."));
+            return BadRequest(Problem("No file provided.", detail: "Provide a non-empty .csv file."));
 
         if (file.Length > MaxFileSize)
-            return BadRequest(ProblemFor(
-                $"File exceeds the {MaxFileSize / 1024 / 1024} MB size limit.",
-                "Split the file into smaller chunks and upload each separately."));
+            return BadRequest(Problem(
+                $"File exceeds the {MaxFileSize / 1024 / 1024} MB limit.",
+                detail: "Split the file and upload each part separately."));
 
         if (!file.FileName.EndsWith(".csv", StringComparison.OrdinalIgnoreCase))
-            return BadRequest(ProblemFor("Invalid file type.", "Only .csv files are accepted."));
+            return BadRequest(Problem("Invalid file type.", detail: "Only .csv files are accepted."));
 
-        var result = await uploadService.UploadAsync(file, ct);
+        var result = await uploadHandler.HandleAsync(new UploadCsvCommand(file), ct);
         return AcceptedAtAction(nameof(GetJobStatus), new { jobId = result.JobId }, result);
     }
 
@@ -51,21 +58,19 @@ public sealed class CsvUploadController(
     [OutputCache(PolicyName = "job-status")]
     [ProducesResponseType(typeof(JobStatusResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetJobStatus(Guid jobId, CancellationToken ct)
+    public async Task<ActionResult<JobStatusResponse>> GetJobStatus(Guid jobId, CancellationToken ct)
     {
-        var status = await uploadService.GetJobStatusAsync(jobId, ct);
-        return status is null
-            ? NotFound(ProblemFor($"Job '{jobId}' not found.", detail: null, statusCode: 404))
-            : Ok(status);
+        var response = await statusQuery.HandleAsync(new GetJobStatusQuery(jobId), ct);
+        return response is null ? NotFound(Problem($"Job '{jobId}' not found.", statusCode: 404)) : Ok(response);
     }
 
     /// <summary>List all upload jobs, newest first.</summary>
     [HttpGet("jobs")]
     [OutputCache(PolicyName = "jobs-list")]
-    [ProducesResponseType(typeof(IEnumerable<JobStatusResponse>), StatusCodes.Status200OK)]
-    public async Task<IActionResult> GetAllJobs(CancellationToken ct)
+    [ProducesResponseType(typeof(IReadOnlyList<JobStatusResponse>), StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<JobStatusResponse>>> GetAllJobs(CancellationToken ct)
     {
-        var jobs = await uploadService.GetAllJobsAsync(ct);
+        var jobs = await listQuery.HandleAsync(new GetAllJobsQuery(), ct);
         return Ok(jobs);
     }
 
@@ -76,24 +81,20 @@ public sealed class CsvUploadController(
     /// </summary>
     [HttpPost("jobs/{jobId:guid}/cancel")]
     [ProducesResponseType(typeof(CancelJobResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(CancelJobResponse), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> CancelJob(Guid jobId, CancellationToken ct)
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<CancelJobResponse>> CancelJob(Guid jobId, CancellationToken ct)
     {
-        var result = await uploadService.CancelJobAsync(jobId, ct);
-
-        if (!result.Success && result.Message == "Job not found.")
-            return NotFound(ProblemFor($"Job '{jobId}' not found.", detail: null, statusCode: 404));
-
-        return result.Success ? Ok(result) : BadRequest(result);
+        var result = await cancelHandler.HandleAsync(new CancelJobCommand(jobId), ct);
+        return Ok(result);
+        // NotFoundException and ConflictException propagate to ExceptionHandlingMiddleware
     }
 
-    private ProblemDetails ProblemFor(string title, string? detail, int statusCode = 400) =>
-        new()
-        {
-            Status   = statusCode,
-            Title    = title,
-            Detail   = detail,
-            Instance = HttpContext.Request.Path
-        };
+    private ProblemDetails Problem(string title, string? detail = null, int statusCode = 400) => new()
+    {
+        Status   = statusCode,
+        Title    = title,
+        Detail   = detail,
+        Instance = HttpContext.Request.Path
+    };
 }

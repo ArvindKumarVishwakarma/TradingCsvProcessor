@@ -4,14 +4,12 @@ using TradingCsvProcessor.Domain.Enums;
 
 namespace TradingCsvProcessor.Infrastructure.Persistence;
 
-public class AppDbContext : DbContext
+public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
-    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
-
-    public DbSet<UploadJob> UploadJobs => Set<UploadJob>();
+    public DbSet<UploadJob>      UploadJobs      => Set<UploadJob>();
     public DbSet<UploadJobChunk> UploadJobChunks => Set<UploadJobChunk>();
-    public DbSet<TradeRecord> TradeRecords => Set<TradeRecord>();
-    public DbSet<JobStageLog> JobStageLogs => Set<JobStageLog>();
+    public DbSet<TradeRecord>    TradeRecords    => Set<TradeRecord>();
+    public DbSet<JobStageLog>    JobStageLogs    => Set<JobStageLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -23,8 +21,19 @@ public class AppDbContext : DbContext
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(30);
             e.Property(x => x.CurrentStage).HasConversion<string>().HasMaxLength(50);
             e.Property(x => x.ErrorMessage).HasMaxLength(2000);
-            e.HasMany(x => x.Chunks).WithOne(c => c.Job).HasForeignKey(c => c.JobId).OnDelete(DeleteBehavior.Cascade);
-            e.HasMany(x => x.StageLogs).WithOne(s => s.Job).HasForeignKey(s => s.JobId).OnDelete(DeleteBehavior.Cascade);
+
+            // Map backing fields for encapsulated collections
+            e.HasMany(x => x.Chunks)
+                .WithOne(c => c.Job)
+                .HasForeignKey(c => c.JobId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.Navigation(x => x.Chunks).HasField("_chunks").UsePropertyAccessMode(PropertyAccessMode.Field);
+
+            e.HasMany(x => x.StageLogs)
+                .WithOne(s => s.Job)
+                .HasForeignKey(s => s.JobId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.Navigation(x => x.StageLogs).HasField("_stageLogs").UsePropertyAccessMode(PropertyAccessMode.Field);
         });
 
         modelBuilder.Entity<UploadJobChunk>(e =>

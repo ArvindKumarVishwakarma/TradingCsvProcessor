@@ -1,0 +1,13 @@
+**/.vs
+**/.git
+**/.gitignore
+**/bin
+**/obj
+**/TestResults
+**/*.user
+**/*.log
+uploads/
+logs/
+docker-compose.override.yml
+README.md
+*.md

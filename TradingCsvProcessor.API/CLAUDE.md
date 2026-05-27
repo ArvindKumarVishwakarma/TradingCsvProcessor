@@ -22,8 +22,6 @@ TradingCsvProcessor.API/
 
 ## Middleware pipeline order
 
-Order matters — `ExceptionHandlingMiddleware` must be first so it catches errors from all downstream middleware.
-
 ```
 ExceptionHandlingMiddleware
 CorrelationIdMiddleware          ← X-Correlation-Id header in + out; pushes to Serilog LogContext
@@ -38,6 +36,22 @@ OutputCache
 Authorization
 MapControllers
 ```
+
+### Why ExceptionHandlingMiddleware is first, not CorrelationIdMiddleware
+
+`ExceptionHandlingMiddleware` wraps the entire pipeline in a try/catch. When an exception is caught it writes a Problem Details response that includes `correlationId` from `HttpContext.Items`. For that value to exist at error-response time, `CorrelationIdMiddleware` must have already run — which it has, because it sits immediately inside the exception handler and executes on the way **in**.
+
+Request flow on error:
+
+```
+→ ExceptionHandlingMiddleware  (try { await next })
+  → CorrelationIdMiddleware    sets HttpContext.Items["X-Correlation-Id"]
+    → ... deeper middleware throws
+  ← exception bubbles up
+← ExceptionHandlingMiddleware catch block reads HttpContext.Items["X-Correlation-Id"] ✓
+```
+
+If the order were reversed, the catch block would fire before the correlation ID was ever set, and every error response would have `"correlationId": null`.
 
 ## CsvUploadController
 
